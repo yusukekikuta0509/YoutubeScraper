@@ -23,6 +23,7 @@ load_dotenv()
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 ##############################################################################
 # 1. ブラウザ関連
 ##############################################################################
@@ -310,7 +311,7 @@ def scrape_viewstats():
     initialize_csv(csv_file)
 
     # キーワードはお好みで変更してください
-    keywords = [""]  
+    keywords = ["切り抜き"]  
 
     driver = setup_browser()
 
@@ -375,6 +376,7 @@ def scrape_viewstats():
                         # CSVに書き込み (順: チャンネル名, チャンネルID, キーワード, メールアドレス)
                         row = [[channel_name, channel_id, keyword, email]]
                         save_to_csv(csv_file, row)
+                        save_to_csv_and_update_sheet(csv_file, row)
 
                         # YouTubeタブ → アナリティクスページ
                         driver.close()
@@ -405,19 +407,32 @@ def scrape_viewstats():
     driver.quit()
     print("[DONE] スクレイピング完了です。")
 
-    # スクレイピング後にCSVをスプレッドシートへアップロード
-    # envファイルから読み込み
+    # スクレイピング後にCSVをスプレッドシートへアップロードする例
+    # 必要に応じて環境変数(.env)で SPREADSHEET_KEY, SHEET_NAME, CREDENTIALS_JSON をセットしてください
     spreadsheet_key = os.getenv("SPREADSHEET_KEY")
-    sheet_name = os.getenv("SHEET_NAME")
+    sheet_name = os.getenv("SHEET_NAME", "viewstats_result")  # デフォルト名
+    credentials_json = os.getenv("CREDENTIALS_JSON", "credentials.json")
+    upload_csv_to_google_spreadsheet(csv_file, spreadsheet_key, sheet_name, credentials_json)
+
+
+##############################################################################
+# 追加: CSVに1行追加して即座にシートを更新する関数の例
+##############################################################################
+def save_to_csv_and_update_sheet(csv_file, row):
+    """
+    CSVに新しい行を追加し、Googleスプレッドシートを更新するユーティリティ関数例。
+    """
+    with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(row)
+        print(f"[DEBUG] CSVに1行を書き込みました: {row}")
+
+    # Googleスプレッドシートを更新
+    spreadsheet_key = os.getenv("SPREADSHEET_KEY")
+    sheet_name = os.getenv("SHEET_NAME", "viewstats_result")
     credentials_json = os.getenv("CREDENTIALS_JSON", "credentials.json")
 
-    # CSVファイルをアップロード
-    upload_csv_to_google_spreadsheet(
-        csv_file=csv_file,
-        spreadsheet_key=spreadsheet_key,
-        sheet_name=sheet_name,
-        credentials_json=credentials_json
-    )
+    upload_csv_to_google_spreadsheet(csv_file, spreadsheet_key, sheet_name, credentials_json)
 
 
 ##############################################################################
