@@ -23,6 +23,22 @@ load_dotenv()
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+##############################################################################
+# 0. ユーザーから検索キーワードをカンマ区切りで入力してもらう関数
+##############################################################################
+def get_user_keywords():
+    """
+    ユーザーにカンマ区切りでキーワードを入力してもらい、
+    ["切り抜き", "日常"] のようなリストにして返す。
+    """
+    raw_input_str = input("検索キーワードをカンマ区切りで入力してください（例: 切り抜き,日常）: ")
+    # カンマで分割し、前後の空白をtrim
+    keywords_list = [k.strip() for k in raw_input_str.split(",") if k.strip()]
+    if not keywords_list:
+        print("[WARN] キーワードが入力されませんでした。処理を終了します。")
+        exit(0)
+    return keywords_list
+
 
 ##############################################################################
 # 1. ブラウザ関連
@@ -31,7 +47,7 @@ def setup_browser():
     """ブラウザのセットアップ (ヘッドレス推奨)"""
     options = webdriver.ChromeOptions()
     # デバッグしたい時は以下をコメントアウトしてください
-    options.add_argument("--headless")
+    # options.add_argument("--headless")
     options.add_argument("--start-maximized")
     options.add_argument("--disable-notifications")
 
@@ -102,7 +118,6 @@ def get_all_channel_ids_on_page(driver):
         print(f"[DEBUG] 一覧ページでチャンネルIDを合計 {len(channel_ids)} 個検出: {channel_ids}")
     except Exception as e:
         print(f"[ERROR] get_all_channel_ids_on_page 失敗: {e}")
-
     return channel_ids
 
 
@@ -155,8 +170,7 @@ def check_no_data_found(driver):
 
 def open_youtube_tab(driver):
     """
-    アナリティクスページで /html/body/main/div/div[2]/div[1]/div/div[1]/div[2]/div[2]/a をクリックして
-    YouTubeページに新たなタブで遷移
+    アナリティクスページにある YouTube へのリンクをクリックして新しいタブで遷移
     """
     try:
         link_xpath = "/html/body/main/div/div[2]/div[1]/div/div[1]/div[2]/div[2]/a"
@@ -177,7 +191,7 @@ def open_youtube_tab(driver):
 ##############################################################################
 def get_youtube_channel_name(driver):
     """
-    YouTubeのチャンネル名(H2)を取得
+    YouTubeのチャンネル名(H2)を取得 (XPath は YouTubeのUI変更により要調整の可能性あり)
     """
     try:
         # 下記は例として h2タグを想定したXPATH (実際のYouTubeの変更によっては要調整)
@@ -242,7 +256,9 @@ def get_youtube_about_text(driver):
         return ""
 
 def parse_email_from_text(raw_text):
-    """raw_text からメールアドレスを抽出 (先頭1件のみ)"""
+    """
+    raw_text からメールアドレスを抽出 (先頭1件のみ)
+    """
     pattern = r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"
     matches = re.findall(pattern, raw_text)
     if matches:
@@ -307,26 +323,40 @@ def upload_csv_to_google_spreadsheet(
 # 8. メイン処理 (スクレイピング)
 ##############################################################################
 def scrape_viewstats():
+    # (0) CSV初期化と、ユーザー入力からキーワードリストを取得
     csv_file = "viewstats_data.csv"
     initialize_csv(csv_file)
+    keywords = get_user_keywords()
 
-    # キーワードはお好みで変更してください
-    keywords = ["切り抜き"]  
-
+    # ブラウザセットアップ
     driver = setup_browser()
 
+    # キーワードごとに処理
     for keyword in keywords:
+        print(f"\n[INFO] 現在のキーワード: '{keyword}'")
+
+        # ページ1～3まで巡回 (必要に応じて変更可能)
+        no_result_for_this_keyword = False
         for page in range(1, 4):
             try:
-                print(f"\n[INFO] キーワード '{keyword}' ページ {page} を処理")
+                print(f"[INFO] キーワード '{keyword}' ページ {page} を処理")
                 url = f"https://www.viewstats.com/?page={page}&q={keyword}"
                 driver.get(url)
 
+                # ページが表示されるまで待機 (ボタン or 本文を待つ)
                 WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//button[contains(@class,'go-to-channel')]"))
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-                wait_with_message(3, f"検索結果ページ {page} を読み込み完了")
+                wait_with_message(2, "検索結果ページを読み込み完了")
 
+                # (A) 「No result found」 チェック
+                body_text = driver.find_element(By.TAG_NAME, "body").text
+                if "No result found" in body_text:
+                    print("[WARN] 'No result found' が表示されました。→ 次のキーワードへスキップ")
+                    no_result_for_this_keyword = True
+                    break  # すぐに次のキーワードへ
+
+                # (B) 通常の処理: チャンネルIDを取得
                 channel_ids = get_all_channel_ids_on_page(driver)
                 if not channel_ids:
                     print(f"[WARN] ページ {page} でチャンネルIDを取得できませんでした。")
@@ -334,6 +364,7 @@ def scrape_viewstats():
 
                 print(f"[INFO] ページ {page} で {len(channel_ids)} 個のID: {channel_ids}")
 
+                # (C) 各チャンネルIDに対してループ
                 for idx, channel_id in enumerate(channel_ids):
                     print(f"[INFO] ★★★ {keyword}: ページ {page}, アカウント {idx+1}/{len(channel_ids)} ★★★")
 
@@ -348,7 +379,7 @@ def scrape_viewstats():
                         switch_to_new_tab(driver)
                         wait_with_message(2, "アナリティクスページへ切り替え完了")
 
-                        # 2) No data found チェック
+                        # 2) 'No data found' チェック
                         if check_no_data_found(driver):
                             driver.close()
                             switch_to_first_tab(driver)
@@ -373,30 +404,31 @@ def scrape_viewstats():
                         about_text = get_youtube_about_text(driver)
                         email = parse_email_from_text(about_text)
 
-                        # CSVに書き込み (順: チャンネル名, チャンネルID, キーワード, メールアドレス)
+                        # CSVに書き込み & 即時スプレッドシートへアップロード
+                        # (※ 頻回に呼び出すとAPIコールが多くなるので注意)
                         row = [[channel_name, channel_id, keyword, email]]
                         save_to_csv(csv_file, row)
                         save_to_csv_and_update_sheet(csv_file, row)
 
-                        # YouTubeタブ → アナリティクスページ
+                        # YouTubeタブを閉じ → アナリティクスページに戻る
                         driver.close()
                         switch_to_new_tab(driver)
                         wait_with_message(2, "YouTubeタブを閉じてアナリティクスに戻りました")
 
-                        # アナリティクス → 検索一覧
+                        # アナリティクスページを閉じ → 検索一覧へ戻る
                         driver.close()
                         switch_to_first_tab(driver)
                         wait_with_message(2, "アナリティクスページを閉じて検索一覧へ戻りました")
 
                     except Exception as e:
                         print(f"[ERROR] アカウント処理例外: {e}")
-                        # タブが残っていれば閉じる
+                        # タブが残っていれば全て閉じて検索一覧(最初のタブ)に戻す
                         while len(driver.window_handles) > 1:
                             driver.switch_to.window(driver.window_handles[-1])
                             driver.close()
                         switch_to_first_tab(driver)
 
-                        # CSVにデフォルト行
+                        # CSVにデフォルト行を記録 (チャンネル取得失敗)
                         row = [[f"チャンネル取得失敗", channel_id, keyword, ""]]
                         save_to_csv(csv_file, row)
 
@@ -404,11 +436,16 @@ def scrape_viewstats():
                 print(f"[ERROR] ページ {page} の処理でエラー: {e}")
                 continue
 
+        # キーワードごとのページ巡回を終えて、結果が無ければ次のキーワードへ
+        if no_result_for_this_keyword:
+            continue
+
+    # 全キーワード処理終了
     driver.quit()
     print("[DONE] スクレイピング完了です。")
 
-    # スクレイピング後にCSVをスプレッドシートへアップロードする例
-    # 必要に応じて環境変数(.env)で SPREADSHEET_KEY, SHEET_NAME, CREDENTIALS_JSON をセットしてください
+    # スクレイピング後にCSVをスプレッドシートへアップロードする
+    # (必要に応じて .env で SPREADSHEET_KEY, SHEET_NAME, CREDENTIALS_JSON をセット)
     spreadsheet_key = os.getenv("SPREADSHEET_KEY")
     sheet_name = os.getenv("SHEET_NAME", "viewstats_result")  # デフォルト名
     credentials_json = os.getenv("CREDENTIALS_JSON", "credentials.json")
@@ -422,19 +459,24 @@ def save_to_csv_and_update_sheet(csv_file, row):
     """
     CSVに新しい行を追加し、Googleスプレッドシートを更新するユーティリティ関数例。
     """
+    # row は [[col1, col2, ...], [col1, col2, ...]] の2次元リストを想定
     with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        writer.writerow(row)
-        print(f"[DEBUG] CSVに1行を書き込みました: {row}")
+        writer.writerows(row)
+        print(f"[DEBUG] CSVに {len(row)} 行を書き込みました: {row}")
 
     # Googleスプレッドシートを更新
     spreadsheet_key = os.getenv("SPREADSHEET_KEY")
     sheet_name = os.getenv("SHEET_NAME", "viewstats_result")
     credentials_json = os.getenv("CREDENTIALS_JSON", "credentials.json")
 
+    time.sleep(5)  # 速すぎるとAPI制限に引っかかるかもしれないので適宜調整してください
+
     upload_csv_to_google_spreadsheet(csv_file, spreadsheet_key, sheet_name, credentials_json)
 
 
+##############################################################################
+# エントリーポイント
 ##############################################################################
 if __name__ == "__main__":
     scrape_viewstats()
